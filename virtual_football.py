@@ -2,146 +2,230 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import random
-from math import exp
+import time
 
-st.set_page_config(page_title="Virtual Football League - Sportybet Style", layout="wide")
+# ---------------- PAGE CONFIG ----------------
+st.set_page_config(page_title="Sportybet Virtual Football V15", layout="wide")
 
-# ----------------------------------------
-# TEAMS & INITIAL SETTINGS
-# ----------------------------------------
-teams = {
-    "Arsenal": 88, "Chelsea": 85, "Liverpool": 90, "Man City": 92,
-    "Man Utd": 84, "Tottenham": 83, "Leicester": 80, "Everton": 78,
-    "West Ham": 76, "Southampton": 74, "Leeds": 72, "Wolves": 71,
-    "Brighton": 70, "Newcastle": 69, "Crystal Palace": 68,
-    "Burnley": 66, "Watford": 65, "Norwich": 63, "Brentford": 64, "Fulham": 67
-}
+SPORTYBET_GREEN = "#16A34A"
+BACKGROUND = "#f8f9fa"
 
-def init_league():
-    return pd.DataFrame({
-        "Team": list(teams.keys()),
-        "Played": 0, "Won": 0, "Drawn": 0, "Lost": 0,
-        "GF": 0, "GA": 0, "Points": 0
-    }).set_index("Team")
-
-if "league_table" not in st.session_state:
-    st.session_state.league_table = init_league()
+# ---------------- SESSION STATES ----------------
 if "round" not in st.session_state:
     st.session_state.round = 1
-if "match_history" not in st.session_state:
-    st.session_state.match_history = []
+if "league_table" not in st.session_state:
+    st.session_state.league_table = pd.DataFrame({
+        "Team": [
+            "Arsenal", "Chelsea", "Liverpool", "Man City",
+            "Man Utd", "Tottenham", "Leicester", "Everton",
+            "West Ham", "Wolves"
+        ],
+        "P": 0, "W": 0, "D": 0, "L": 0, "GF": 0, "GA": 0, "GD": 0, "Pts": 0
+    })
+if "fixtures" not in st.session_state:
+    st.session_state.fixtures = []
+if "results" not in st.session_state:
+    st.session_state.results = []
+if "betslip" not in st.session_state:
+    st.session_state.betslip = []
+if "top_scorers" not in st.session_state:
+    st.session_state.top_scorers = {team: 0 for team in [
+        "Arsenal", "Chelsea", "Liverpool", "Man City",
+        "Man Utd", "Tottenham", "Leicester", "Everton",
+        "West Ham", "Wolves"
+    ]}
 
-# ----------------------------------------
-# MATCH SIMULATION
-# ----------------------------------------
-def poisson_goal_avg(team_strength):
-    return max(0.2, team_strength / 50 * 1.5)
+teams = st.session_state.league_table["Team"].tolist()
+team_strength = {team: random.randint(70, 95) for team in teams}
 
-def simulate_match(home, away):
-    home_avg = poisson_goal_avg(teams[home])
-    away_avg = poisson_goal_avg(teams[away])
-    home_goals = np.random.poisson(home_avg)
-    away_goals = np.random.poisson(away_avg)
-    return int(home_goals), int(away_goals)
+# ---------------- STYLE ----------------
+st.markdown(f"""
+    <style>
+        body {{
+            background-color: {BACKGROUND};
+            color: #333;
+        }}
+        .sporty-header {{
+            background-color: {SPORTYBET_GREEN};
+            color: white;
+            text-align: center;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 28px;
+            font-weight: bold;
+        }}
+        .nav-tabs {{
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+        }}
+        .nav-tabs button {{
+            background-color: white;
+            border: 2px solid {SPORTYBET_GREEN};
+            color: {SPORTYBET_GREEN};
+            border-radius: 8px;
+            padding: 8px 15px;
+            font-weight: bold;
+        }}
+        .nav-tabs button:hover {{
+            background-color: {SPORTYBET_GREEN};
+            color: white;
+        }}
+        .match-card {{
+            background-color: white;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 10px 0;
+            border-left: 6px solid {SPORTYBET_GREEN};
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }}
+        .bet-slip {{
+            background-color: white;
+            border-radius: 10px;
+            padding: 10px;
+            border: 2px solid {SPORTYBET_GREEN};
+        }}
+    </style>
+""", unsafe_allow_html=True)
 
-def update_table(home, away, g1, g2):
-    table = st.session_state.league_table
-    table.loc[home, "Played"] += 1
-    table.loc[away, "Played"] += 1
-    table.loc[home, "GF"] += g1
-    table.loc[home, "GA"] += g2
-    table.loc[away, "GF"] += g2
-    table.loc[away, "GA"] += g1
-    if g1 > g2:
-        table.loc[home, "Won"] += 1
-        table.loc[away, "Lost"] += 1
-        table.loc[home, "Points"] += 3
-    elif g2 > g1:
-        table.loc[away, "Won"] += 1
-        table.loc[home, "Lost"] += 1
-        table.loc[away, "Points"] += 3
-    else:
-        table.loc[home, "Drawn"] += 1
-        table.loc[away, "Drawn"] += 1
-        table.loc[home, "Points"] += 1
-        table.loc[away, "Points"] += 1
+# ---------------- FUNCTIONS ----------------
+def generate_fixtures():
+    random.shuffle(teams)
+    st.session_state.fixtures = [(teams[i], teams[i+1]) for i in range(0, len(teams), 2)]
 
 def generate_odds(home, away):
-    home_rating = teams[home]
-    away_rating = teams[away]
-    base = (home_rating - away_rating) / 100.0
-    home_win_prob = 0.45 + base * 0.3
-    away_win_prob = 0.45 - base * 0.3
-    draw_prob = 1 - (home_win_prob + away_win_prob)
+    diff = (team_strength[home] - team_strength[away]) / 100
+    home_win_prob = 0.4 + diff * 0.3
+    away_win_prob = 0.4 - diff * 0.3
+    draw_prob = max(0.1, 1 - (home_win_prob + away_win_prob))
     return {
         "1": round(1 / max(0.05, home_win_prob), 2),
         "X": round(1 / max(0.05, draw_prob), 2),
         "2": round(1 / max(0.05, away_win_prob), 2)
     }
 
-def match_commentary(home, away, g1, g2):
-    events = []
-    goals = sorted(random.sample(range(5, 85), g1 + g2))
-    home_count, away_count = 0, 0
-    for m in range(0, 91, 10):
-        while goals and goals[0] <= m:
-            scorer = home if home_count < g1 else away
-            events.append(f"{m}' - Goal for {scorer}!")
-            if scorer == home:
-                home_count += 1
-            else:
-                away_count += 1
-            goals.pop(0)
-        events.append(f"{m}' - End to end play...")
-    events.append(f"FT: {home} {g1} - {g2} {away}")
-    return events
+def add_to_betslip(match, pick, odd):
+    st.session_state.betslip.append({"Match": match, "Pick": pick, "Odd": odd})
 
-# ----------------------------------------
-# UI
-# ----------------------------------------
-st.title("⚽ Virtual Football - Sportybet Style V3")
+def simulate_match(home, away):
+    home_avg = team_strength[home] / 60
+    away_avg = team_strength[away] / 60
+    g1 = np.random.poisson(home_avg)
+    g2 = np.random.poisson(away_avg)
+    st.session_state.top_scorers[home] += g1
+    st.session_state.top_scorers[away] += g2
+    update_league(home, away, g1, g2)
+    return g1, g2
 
-tabs = st.tabs(["🏆 League Table", "📅 Fixtures & Results", "🎯 Predictions", "📜 Match History"])
+def update_league(home, away, g1, g2):
+    table = st.session_state.league_table
+    table.loc[table["Team"] == home, ["P", "GF", "GA"]] += [1, g1, g2]
+    table.loc[table["Team"] == away, ["P", "GF", "GA"]] += [1, g2, g1]
+    table["GD"] = table["GF"] - table["GA"]
 
-with tabs[0]:
-    st.subheader("League Table")
-    st.dataframe(st.session_state.league_table.sort_values(by=["Points","GF"], ascending=False))
-
-with tabs[1]:
-    st.subheader(f"Round {st.session_state.round} Fixtures")
-    team_list = list(teams.keys())
-    random.shuffle(team_list)
-    fixtures = [(team_list[i], team_list[i+1]) for i in range(0, len(team_list), 2)]
-    st.write(pd.DataFrame(fixtures, columns=["Home", "Away"]))
-
-    if st.button("Simulate This Round"):
-        for home, away in fixtures:
-            g1, g2 = simulate_match(home, away)
-            update_table(home, away, g1, g2)
-            odds = generate_odds(home, away)
-            commentary = match_commentary(home, away, g1, g2)
-            st.markdown(f"**{home} {g1} - {g2} {away}** | Odds → 1: {odds['1']} | X: {odds['X']} | 2: {odds['2']}")
-            with st.expander(f"Commentary for {home} vs {away}"):
-                for event in commentary:
-                    st.write(event)
-            st.session_state.match_history.append((home, g1, g2, away))
-        st.session_state.round += 1
-        st.success("Round completed!")
-
-with tabs[2]:
-    st.subheader("Correct Score Prediction")
-    home = st.selectbox("Select Home Team", list(teams.keys()))
-    away = st.selectbox("Select Away Team", [t for t in teams.keys() if t != home])
-    if st.button("Predict Score"):
-        p1, p2 = simulate_match(home, away)
-        odds = generate_odds(home, away)
-        st.info(f"Predicted Score: {home} {p1} - {p2} {away}")
-        st.write(f"**Odds:** 1 → {odds['1']} | X → {odds['X']} | 2 → {odds['2']}")
-
-with tabs[3]:
-    st.subheader("Recent Match History")
-    if st.session_state.match_history:
-        df = pd.DataFrame(st.session_state.match_history, columns=["Home", "HG", "AG", "Away"])
-        st.table(df.tail(10))
+    if g1 > g2:
+        table.loc[table["Team"] == home, "W"] += 1
+        table.loc[table["Team"] == away, "L"] += 1
+        table.loc[table["Team"] == home, "Pts"] += 3
+    elif g2 > g1:
+        table.loc[table["Team"] == away, "W"] += 1
+        table.loc[table["Team"] == home, "L"] += 1
+        table.loc[table["Team"] == away, "Pts"] += 3
     else:
-        st.info("No match history yet.")
+        table.loc[table["Team"] == home, "D"] += 1
+        table.loc[table["Team"] == away, "D"] += 1
+        table.loc[table["Team"] == home, "Pts"] += 1
+        table.loc[table["Team"] == away, "Pts"] += 1
+    st.session_state.league_table = table
+
+def auto_play_season():
+    for rnd in range(st.session_state.round, 11):
+        st.subheader(f"Round {rnd} Results")
+        generate_fixtures()
+        for home, away in st.session_state.fixtures:
+            g1, g2 = simulate_match(home, away)
+            res = f"{home} {g1} - {g2} {away}"
+            st.session_state.results.append(res)
+            st.write(res)
+            time.sleep(0.2)
+        st.session_state.round += 1
+    st.success("🏆 Season Completed!")
+
+# ---------------- HEADER ----------------
+st.markdown(f'<div class="sporty-header">⚽ Sportybet Virtual Football V15</div>', unsafe_allow_html=True)
+
+# ---------------- NAVIGATION ----------------
+tab = st.radio("Navigation", ["🏠 Home", "📅 Fixtures & Betting", "🧾 Bet Slip", "🏟 Results", "🏆 League Table"])
+
+# ---------------- HOME ----------------
+if tab == "🏠 Home":
+    st.subheader("Welcome to Sportybet Virtual Football V15")
+    st.write("Enjoy betting, fixtures, results, and live commentary — just like Sportybet!")
+    if st.button("▶ Auto-Play Full Season"):
+        auto_play_season()
+
+# ---------------- FIXTURES & BETTING ----------------
+elif tab == "📅 Fixtures & Betting":
+    st.subheader(f"Fixtures - Round {st.session_state.round}")
+    if not st.session_state.fixtures:
+        generate_fixtures()
+
+    for home, away in st.session_state.fixtures:
+        odds = generate_odds(home, away)
+        st.markdown(f"""
+        <div class="match-card">
+            <b>{home}</b> vs <b>{away}</b><br>
+            Odds → 1: {odds['1']} | X: {odds['X']} | 2: {odds['2']}
+        </div>
+        """, unsafe_allow_html=True)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button(f"{home} WIN ({odds['1']})", key=f"{home}-1"):
+                add_to_betslip(f"{home} vs {away}", "1", odds['1'])
+        with col2:
+            if st.button(f"DRAW ({odds['X']})", key=f"{home}-X"):
+                add_to_betslip(f"{home} vs {away}", "X", odds['X'])
+        with col3:
+            if st.button(f"{away} WIN ({odds['2']})", key=f"{home}-2"):
+                add_to_betslip(f"{home} vs {away}", "2", odds['2'])
+
+    if st.button("▶ Play This Round"):
+        st.subheader("🏟 Match Results")
+        for home, away in st.session_state.fixtures:
+            g1, g2 = simulate_match(home, away)
+            result = f"{home} {g1} - {g2} {away}"
+            st.session_state.results.append(result)
+            st.write(result)
+        st.session_state.round += 1
+        generate_fixtures()
+
+# ---------------- BET SLIP ----------------
+elif tab == "🧾 Bet Slip":
+    st.subheader("Your Bet Slip")
+    if st.session_state.betslip:
+        slip_df = pd.DataFrame(st.session_state.betslip)
+        total_odd = round(np.prod(slip_df["Odd"]), 2)
+        st.table(slip_df)
+        st.write(f"**Total Odds:** {total_odd}")
+    else:
+        st.info("No selections yet.")
+
+# ---------------- RESULTS ----------------
+elif tab == "🏟 Results":
+    st.subheader("Match Results")
+    if st.session_state.results:
+        for res in st.session_state.results[-10:]:
+            st.write(f"- {res}")
+    else:
+        st.info("No results yet.")
+
+# ---------------- LEAGUE TABLE ----------------
+elif tab == "🏆 League Table":
+    st.subheader("Current Standings")
+    table = st.session_state.league_table.sort_values(by=["Pts", "GD", "GF"], ascending=[False, False, False])
+    st.table(table.reset_index(drop=True))
+
+    st.subheader("🎯 Top Scorers")
+    top_scorers_df = pd.DataFrame(list(st.session_state.top_scorers.items()), columns=["Team", "Goals"])
+    top_scorers_df = top_scorers_df.sort_values(by="Goals", ascending=False)
+    st.table(top_scorers_df)
